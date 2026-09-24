@@ -1,0 +1,85 @@
+//+------------------------------------------------------------------+
+//|                                           CloseAllPositions.mq4  |
+//|                        Force-close all open market positions     |
+//+------------------------------------------------------------------+
+#property copyright "User"
+#property version   "1.00"
+#property strict
+#property script_show_inputs
+
+input int      SlippagePoints = 30;     // slippage in points
+input int      MaxRetries     = 5;      // retries per ticket
+input int      RetryDelayMs   = 300;    // pause between retries
+input bool     ClosePending   = false;  // also delete pending orders
+
+int OnInit()
+{
+   return(INIT_SUCCEEDED);
+}
+
+void OnStart()
+{
+   int closed = 0;
+   int failed = 0;
+
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+
+      int type = OrderType();
+
+      // pending orders
+      if(type > OP_SELL)
+      {
+         if(ClosePending)
+         {
+            if(OrderDelete(OrderTicket()))
+               closed++;
+            else
+            {
+               failed++;
+               Print("OrderDelete failed ticket=", OrderTicket(),
+                     " err=", GetLastError());
+            }
+         }
+         continue;
+      }
+
+      // market positions
+      bool ok = false;
+      for(int attempt = 1; attempt <= MaxRetries && !ok; attempt++)
+      {
+         RefreshRates();
+         ResetLastError();
+
+         double price = OrderClosePrice();
+         ok = OrderClose(OrderTicket(),
+                         OrderLots(),
+                         price,
+                         SlippagePoints,
+                         clrNONE);
+
+         if(!ok)
+         {
+            int err = GetLastError();
+            Print("Close attempt ", attempt,
+                  " ticket=", OrderTicket(),
+                  " symbol=", OrderSymbol(),
+                  " err=", err);
+
+            if(err == 136 || err == 138 || err == 135 || err == 146)
+               Sleep(RetryDelayMs);
+            else
+               break;
+         }
+      }
+
+      if(ok)
+         closed++;
+      else
+         failed++;
+   }
+
+   Print("Done. Closed/deleted: ", closed, "  Failed: ", failed);
+}
