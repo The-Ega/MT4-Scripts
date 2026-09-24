@@ -1,0 +1,100 @@
+//+------------------------------------------------------------------+
+//|                                   TP all position 100 points.mq4 |
+//|                                  Copyright 2026, MetaQuotes Ltd. |
+//|                                             https://www.mql5.com |
+//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//|                                      SetTP_100PointsFromEntry.mq4 |
+//|                         Sets TP 100 points from entry (open) price |
+//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//|                                     SetTP_1000PointsFromEntry.mq4 |
+//|                        Sets TP 1000 points from entry (open) price |
+//+------------------------------------------------------------------+
+#property copyright "Custom script"
+#property version   "1.00"
+#property strict
+#property script_show_inputs
+
+input int    TakeProfitPoints  = 5000;  // Take Profit distance in points
+input int    MagicNumber       = -1;    // -1 = all trades, otherwise only this magic
+input bool   CurrentSymbolOnly = true;  // true = only this chart symbol
+
+//+------------------------------------------------------------------+
+int OnStart()
+{
+   if(TakeProfitPoints <= 0)
+   {
+      Alert("TakeProfitPoints must be greater than 0");
+      return(0);
+   }
+
+   int modified = 0;
+   int failed   = 0;
+
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+
+      if(OrderType() != OP_BUY && OrderType() != OP_SELL)
+         continue;
+
+      if(CurrentSymbolOnly && OrderSymbol() != Symbol())
+         continue;
+
+      if(MagicNumber >= 0 && OrderMagicNumber() != MagicNumber)
+         continue;
+
+      double point  = MarketInfo(OrderSymbol(), MODE_POINT);
+      int    digits = (int)MarketInfo(OrderSymbol(), MODE_DIGITS);
+      double stopsLevel = MarketInfo(OrderSymbol(), MODE_STOPLEVEL) * point;
+
+      double openPrice = OrderOpenPrice();
+      double sl        = OrderStopLoss();
+      double newTP     = 0;
+
+      if(OrderType() == OP_BUY)
+         newTP = NormalizeDouble(openPrice + TakeProfitPoints * point, digits);
+      else
+         newTP = NormalizeDouble(openPrice - TakeProfitPoints * point, digits);
+
+      if(MathAbs(OrderTakeProfit() - newTP) < point)
+         continue;
+
+      RefreshRates();
+      double currentClosePrice = (OrderType() == OP_BUY)
+                                 ? MarketInfo(OrderSymbol(), MODE_BID)
+                                 : MarketInfo(OrderSymbol(), MODE_ASK);
+
+      if(MathAbs(currentClosePrice - newTP) < stopsLevel)
+      {
+         Print("Ticket ", OrderTicket(), ": TP too close to market. Min distance = ",
+               MarketInfo(OrderSymbol(), MODE_STOPLEVEL), " points");
+         failed++;
+         continue;
+      }
+
+      bool ok = OrderModify(OrderTicket(),
+                            OrderOpenPrice(),
+                            sl,
+                            newTP,
+                            0,
+                            clrNONE);
+
+      if(ok)
+      {
+         modified++;
+         Print("Ticket ", OrderTicket(), " TP set to ", newTP);
+      }
+      else
+      {
+         failed++;
+         Print("Ticket ", OrderTicket(), " modify failed. Error: ", GetLastError());
+      }
+   }
+
+   Alert("Done. Modified: ", modified, "  Failed: ", failed);
+   return(0);
+}
+//+------------------------------------------------------------------+
