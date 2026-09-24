@@ -1,0 +1,82 @@
+//+------------------------------------------------------------------+
+//|                                   CloseHalfLosingPositions.mq4   |
+//|                  Partial-close every open losing position by 50% |
+//+------------------------------------------------------------------+
+#property copyright "User script"
+#property version   "1.00"
+#property strict
+#property script_show_inputs
+
+input int    Slippage   = 3;          // slippage in points
+input color  CloseColor = clrRed;     // arrow color on chart
+
+//+------------------------------------------------------------------+
+void OnStart()
+{
+   int total = OrdersTotal();
+   if(total == 0)
+   {
+      Print("No open positions.");
+      return;
+   }
+
+   for(int i = total - 1; i >= 0; i--)          // loop backwards because we close
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+
+      // only market orders
+      if(OrderType() != OP_BUY && OrderType() != OP_SELL)
+         continue;
+
+      // net profit (including swap & commission)
+      double netProfit = OrderProfit() + OrderSwap() + OrderCommission();
+      if(netProfit >= 0.0)
+         continue;                              // skip winning / breakeven trades
+
+      string   symbol   = OrderSymbol();
+      int      ticket   = OrderTicket();
+      double   curLots  = OrderLots();
+      double   halfLots = NormalizeLots(symbol, curLots / 2.0);
+
+      if(halfLots < MarketInfo(symbol, MODE_MINLOT))
+      {
+         Print("Ticket #", ticket, " half-lot too small (", halfLots,
+               ") – skipped.");
+         continue;
+      }
+
+      RefreshRates();
+      double closePrice = (OrderType() == OP_BUY)
+                          ? MarketInfo(symbol, MODE_BID)
+                          : MarketInfo(symbol, MODE_ASK);
+
+      bool ok = OrderClose(ticket, halfLots, closePrice, Slippage, CloseColor);
+
+      if(ok)
+         Print("Partial-closed ticket #", ticket,
+               "  ", DoubleToStr(halfLots, 2), " lots  (was ",
+               DoubleToStr(curLots, 2), ")  loss = ",
+               DoubleToStr(netProfit, 2));
+      else
+         Print("FAILED to close ticket #", ticket,
+               "  error ", GetLastError());
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Normalize volume to broker lot step / min / max                  |
+//+------------------------------------------------------------------+
+double NormalizeLots(string symbol, double lots)
+{
+   double minLot  = MarketInfo(symbol, MODE_MINLOT);
+   double maxLot  = MarketInfo(symbol, MODE_MAXLOT);
+   double lotStep = MarketInfo(symbol, MODE_LOTSTEP);
+
+   lots = MathFloor(lots / lotStep) * lotStep;   // snap to step
+   if(lots < minLot) lots = 0;                   // too small → skip later
+   if(lots > maxLot) lots = maxLot;
+
+   return NormalizeDouble(lots, 2);
+}
+//+------------------------------------------------------------------+
