@@ -1,0 +1,107 @@
+//+------------------------------------------------------------------+
+//| DrawMarginLevel90.mq4                                            |
+//+------------------------------------------------------------------+
+#property copyright "User"
+#property version   "1.00"
+#property strict
+#property show_inputs
+
+extern double InpTargetML      = 90.0;     // Target margin level %
+extern color  InpLineColor     = Black;
+extern int    InpLineWidth     = 3;        // 1-5, thicker = more visible
+extern bool   InpOnlyThisSymbol = true;    // use this chart's positions for price move
+extern int    InpMagic         = 0;        // 0 = all magics
+
+#define LINE_NAME "ML_TARGET_LINE"
+
+double ValuePerPriceUnit(string symbol, double lots)
+  {
+   double tickValue = MarketInfo(symbol, MODE_TICKVALUE);
+   double tickSize  = MarketInfo(symbol, MODE_TICKSIZE);
+   if(tickSize <= 0.0) return(0.0);
+   return(lots * tickValue / tickSize);
+  }
+
+int OnStart()
+  {
+   ObjectDelete(LINE_NAME);
+
+   double margin = AccountMargin();
+   double equity = AccountEquity();
+
+   if(margin <= 0.0)
+     {
+      Alert("No used margin. Nothing to calculate.");
+      return(0);
+     }
+
+   double currentML = equity / margin * 100.0;
+   double neededEquity = InpTargetML / 100.0 * margin;
+   double neededPnL    = neededEquity - equity;   // extra floating P/L needed
+
+   double netValuePerPrice = 0.0;  // account currency per 1.00 price move
+   int    posCount = 0;
+
+   for(int i = OrdersTotal()-1; i >= 0; i--)
+     {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+
+      if(OrderType()!=OP_BUY && OrderType()!=OP_SELL)
+         continue;
+
+      if(InpOnlyThisSymbol && OrderSymbol()!=Symbol())
+         continue;
+
+      if(InpMagic!=0 && OrderMagicNumber()!=InpMagic)
+         continue;
+
+      double v = ValuePerPriceUnit(OrderSymbol(), OrderLots());
+      if(OrderType()==OP_BUY) netValuePerPrice += v;
+      else                    netValuePerPrice -= v;
+      posCount++;
+     }
+
+   if(posCount==0)
+     {
+      Alert("No open market positions on this filter.");
+      return(0);
+     }
+
+   if(MathAbs(netValuePerPrice) < 0.0000001)
+     {
+      Alert("Net exposure on this filter is hedged. This chart's price cannot move margin level.");
+      return(0);
+     }
+
+   // Use Bid as the reference price on the chart
+   double nowPrice = Bid;
+   double targetPrice = nowPrice + neededPnL / netValuePerPrice;
+   targetPrice = NormalizeDouble(targetPrice, Digits);
+
+   if(!ObjectCreate(LINE_NAME, OBJ_HLINE, 0, 0, targetPrice))
+     {
+      Alert("Failed to create line. Error ", GetLastError());
+      return(0);
+     }
+
+   ObjectSet(LINE_NAME, OBJPROP_COLOR, InpLineColor);
+   ObjectSet(LINE_NAME, OBJPROP_STYLE, STYLE_SOLID);
+   ObjectSet(LINE_NAME, OBJPROP_WIDTH, InpLineWidth);
+   ObjectSet(LINE_NAME, OBJPROP_BACK, false);
+   ObjectSet(LINE_NAME, OBJPROP_RAY, true);
+   ObjectSet(LINE_NAME, OBJPROP_SELECTABLE, true);
+   ObjectSetText(LINE_NAME,
+                 "ML "+DoubleToStr(InpTargetML,0)+"%  "+DoubleToStr(targetPrice,Digits),
+                 10, "Arial", InpLineColor);
+
+   string dir = (targetPrice > nowPrice ? "ABOVE" : "BELOW");
+   string msg = "Current ML="+DoubleToStr(currentML,2)+"%  |  "+
+                DoubleToStr(InpTargetML,1)+"% price="+DoubleToStr(targetPrice,Digits)+
+                " ("+dir+" current "+DoubleToStr(nowPrice,Digits)+")";
+   Print(msg);
+   Comment(msg);
+   Alert(msg);
+   return(0);
+  }
+//+------------------------------------------------------------------+
