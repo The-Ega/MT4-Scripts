@@ -1,0 +1,111 @@
+//+------------------------------------------------------------------+
+//| SetTP_OpenAndPending.mq4                                         |
+//+------------------------------------------------------------------+
+#property copyright "User"
+#property version   "1.00"
+#property strict
+#property show_inputs
+
+extern int    InpOpenTPPoints     = 6000;   // TP for open positions (points)
+extern int    InpPendingTPPoints  = 10000;  // TP for pending orders (points)
+extern bool   InpFromCurrentPrice = false;  // true = TP from current Bid/Ask
+extern bool   InpOnlyThisSymbol   = true;   // true = current chart symbol only
+extern int    InpMagic            = 0;      // 0 = all magic numbers
+extern bool   InpModifyIfTPExists = true;   // false = skip orders that already have TP
+
+bool IsPending(int type)
+  {
+   return(type==OP_BUYLIMIT || type==OP_SELLLIMIT ||
+          type==OP_BUYSTOP  || type==OP_SELLSTOP);
+  }
+
+bool IsBuyType(int type)
+  {
+   return(type==OP_BUY || type==OP_BUYLIMIT || type==OP_BUYSTOP);
+  }
+
+double CalcTP(string symbol, bool isBuy, double basePrice, int points)
+  {
+   double point  = MarketInfo(symbol, MODE_POINT);
+   int    digits = (int)MarketInfo(symbol, MODE_DIGITS);
+   double tp = isBuy ? (basePrice + points * point)
+                     : (basePrice - points * point);
+   return(NormalizeDouble(tp, digits));
+  }
+
+int OnStart()
+  {
+   int modified = 0;
+   int skipped  = 0;
+   int failed   = 0;
+
+   for(int i = OrdersTotal()-1; i >= 0; i--)
+     {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+
+      string symbol = OrderSymbol();
+      if(InpOnlyThisSymbol && symbol != Symbol())
+         continue;
+
+      if(InpMagic != 0 && OrderMagicNumber() != InpMagic)
+         continue;
+
+      int type = OrderType();
+      if(type!=OP_BUY && type!=OP_SELL && !IsPending(type))
+         continue;
+
+      double entry = OrderOpenPrice();
+      double sl    = OrderStopLoss();
+      double oldTP = OrderTakeProfit();
+      bool   isBuy = IsBuyType(type);
+
+      if(!InpModifyIfTPExists && oldTP > 0.0)
+        {
+         skipped++;
+         continue;
+        }
+
+      int points = IsPending(type) ? InpPendingTPPoints : InpOpenTPPoints;
+
+      double base = entry;
+      if(!IsPending(type) && InpFromCurrentPrice)
+         base = isBuy ? MarketInfo(symbol, MODE_ASK)
+                      : MarketInfo(symbol, MODE_BID);
+
+      double newTP = CalcTP(symbol, isBuy, base, points);
+
+      if(MathAbs(oldTP - newTP) < MarketInfo(symbol, MODE_POINT)*0.5)
+        {
+         skipped++;
+         continue;
+        }
+
+      RefreshRates();
+      bool ok = OrderModify(OrderTicket(),
+                            entry,
+                            sl,
+                            newTP,
+                            OrderExpiration(),
+                            clrNONE);
+
+      if(ok)
+        {
+         modified++;
+         Print("Modified #", OrderTicket(), " ", symbol, " TP=", newTP);
+        }
+      else
+        {
+         failed++;
+         Print("Failed #", OrderTicket(), " ", symbol, " error=", GetLastError());
+        }
+     }
+
+   string msg = "Done. Modified: " + IntegerToString(modified) +
+                "  Skipped: " + IntegerToString(skipped) +
+                "  Failed: " + IntegerToString(failed);
+   Print(msg);
+   Alert(msg);
+   return(0);
+  }
+//+------------------------------------------------------------------+
