@@ -1,0 +1,128 @@
+#property copyright "LIFELINE"
+#property version   "1.00"
+#property strict
+#property show_inputs
+
+input double          InpMarginLevelPct = 100.0;         // Margin level % (100 = Equity = Used Margin)
+input color           InpMarginColor    = clrBlack;      // 100% margin line
+input color           InpBEColor        = clrDodgerBlue; // Equity = Balance line
+input ENUM_LINE_STYLE InpMarginStyle    = STYLE_DASH;
+input ENUM_LINE_STYLE InpBEStyle        = STYLE_SOLID;
+input int             InpLineWidth      = 1;
+input bool            InpShowLabels     = true;
+input int             InpFontSize       = 8;
+input bool            InpDeleteOld      = true;          // Delete previous lines from this script first
+input string          InpPrefix         = "AccLvl_";     // Object prefix
+
+#define OBJ_ML "ML"
+#define OBJ_BE "BE"
+
+void OnStart()
+  {
+   if(InpDeleteOld)
+      DeleteMine();
+
+   double moneyPerPrice = MoneyPerPriceThisSymbol();
+   double bid = MarketInfo(Symbol(), MODE_BID);
+   int    dig = (int)MarketInfo(Symbol(), MODE_DIGITS);
+
+   if(MathAbs(moneyPerPrice) < 1e-8)
+     {
+      Alert("No net exposure on ", Symbol(),
+            ". Cannot map account equity/margin to a price on this chart.");
+      return;
+     }
+
+   // Equity = Balance  =>  floating P/L becomes 0
+   double dPL_BE  = -AccountProfit();
+   double bePrice = NormalizeDouble(bid + dPL_BE / moneyPerPrice, dig);
+
+   DrawHLine(OBJ_BE, bePrice, InpBEColor, InpBEStyle,
+             "Equity = Balance  " + DoubleToStr(bePrice, dig));
+
+   double used = AccountMargin();
+   if(used > 0.0)
+     {
+      double targetEquity = used * (InpMarginLevelPct / 100.0);
+      double dPL_ML = targetEquity - AccountEquity();
+      double mlPrice = NormalizeDouble(bid + dPL_ML / moneyPerPrice, dig);
+
+      DrawHLine(OBJ_ML, mlPrice, InpMarginColor, InpMarginStyle,
+                DoubleToStr(InpMarginLevelPct, 0) + "% margin  " + DoubleToStr(mlPrice, dig));
+     }
+   else
+     {
+      Print("No used margin — skipped ", DoubleToStr(InpMarginLevelPct, 0), "% margin line.");
+     }
+  }
+
+double MoneyPerPriceThisSymbol()
+  {
+   double tickValue = MarketInfo(Symbol(), MODE_TICKVALUE);
+   double tickSize  = MarketInfo(Symbol(), MODE_TICKSIZE);
+   if(tickValue == 0.0 || tickSize <= 0.0)
+      return(0.0);
+
+   double mpp = 0.0;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+      if(OrderSymbol() != Symbol())
+         continue;
+      if(OrderType() != OP_BUY && OrderType() != OP_SELL)
+         continue;
+
+      double coef = OrderLots() * tickValue / tickSize;
+      if(OrderType() == OP_BUY)
+         mpp += coef;
+      else
+         mpp -= coef;
+     }
+   return(mpp);
+  }
+
+void DrawHLine(const string id, const double price, const color clr,
+               const ENUM_LINE_STYLE style, const string label)
+  {
+   string lineName = InpPrefix + id + "_line";
+   string textName = InpPrefix + id + "_txt";
+
+   if(ObjectFind(0, lineName) < 0)
+      ObjectCreate(0, lineName, OBJ_HLINE, 0, 0, price);
+
+   ObjectSetDouble(0, lineName, OBJPROP_PRICE, price);
+   ObjectSetInteger(0, lineName, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, lineName, OBJPROP_STYLE, style);
+   ObjectSetInteger(0, lineName, OBJPROP_WIDTH, InpLineWidth);
+   ObjectSetInteger(0, lineName, OBJPROP_BACK, true);
+   ObjectSetInteger(0, lineName, OBJPROP_SELECTABLE, true);
+   ObjectSetInteger(0, lineName, OBJPROP_HIDDEN, false);
+   ObjectSetString(0, lineName, OBJPROP_TEXT, label);
+
+   if(InpShowLabels)
+     {
+      datetime t = Time[0] + Period() * 60 * 3;
+      if(ObjectFind(0, textName) < 0)
+         ObjectCreate(0, textName, OBJ_TEXT, 0, t, price);
+      ObjectSetInteger(0, textName, OBJPROP_TIME, t);
+      ObjectSetDouble(0, textName, OBJPROP_PRICE, price);
+      ObjectSetString(0, textName, OBJPROP_TEXT, "  " + label);
+      ObjectSetInteger(0, textName, OBJPROP_COLOR, clr);
+      ObjectSetInteger(0, textName, OBJPROP_FONTSIZE, InpFontSize);
+      ObjectSetString(0, textName, OBJPROP_FONT, "Arial");
+      ObjectSetInteger(0, textName, OBJPROP_ANCHOR, ANCHOR_LEFT_LOWER);
+      ObjectSetInteger(0, textName, OBJPROP_SELECTABLE, true);
+      ObjectSetInteger(0, textName, OBJPROP_HIDDEN, false);
+     }
+  }
+
+void DeleteMine()
+  {
+   for(int i = ObjectsTotal() - 1; i >= 0; i--)
+     {
+      string name = ObjectName(i);
+      if(StringFind(name, InpPrefix) == 0)
+         ObjectDelete(0, name);
+     }
+  }
