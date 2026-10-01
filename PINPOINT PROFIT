@@ -1,0 +1,67 @@
+//+------------------------------------------------------------------+
+//|                                              SetSameTP.mq4       |
+//|  Sets the same TP price on all open and pending orders           |
+//+------------------------------------------------------------------+
+#property copyright "Custom"
+#property version   "1.00"
+#property strict
+#property script_show_inputs
+
+input double TP_Price          = 0.0;   // Take Profit price (enter manually)
+input bool   OnlyCurrentSymbol = true;  // true = only this chart symbol
+input int    MagicNumber       = -1;    // -1 = all magic numbers
+
+//+------------------------------------------------------------------+
+void OnStart()
+{
+   if(TP_Price <= 0)
+   {
+      Alert("Enter a Take Profit price greater than 0.");
+      return;
+   }
+
+   int modified = 0;
+   int failed   = 0;
+
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+
+      if(OnlyCurrentSymbol && OrderSymbol() != Symbol())
+         continue;
+      if(MagicNumber >= 0 && OrderMagicNumber() != MagicNumber)
+         continue;
+
+      int    type   = OrderType();
+      if(type > OP_SELLSTOP)
+         continue; // skip balance / credit
+
+      string sym    = OrderSymbol();
+      int    digits = (int)MarketInfo(sym, MODE_DIGITS);
+      double point  = MarketInfo(sym, MODE_POINT);
+      double newTP  = NormalizeDouble(TP_Price, digits);
+      double oldTP  = OrderTakeProfit();
+
+      if(MathAbs(newTP - oldTP) < point)
+         continue;
+
+      ResetLastError();
+      if(OrderModify(OrderTicket(), OrderOpenPrice(), OrderStopLoss(),
+                     newTP, OrderExpiration(), clrNONE))
+      {
+         modified++;
+         Print("Modified #", OrderTicket(), " ", sym,
+               " TP=", DoubleToString(newTP, digits));
+      }
+      else
+      {
+         failed++;
+         Print("Failed #", OrderTicket(), " ", sym,
+               " err=", GetLastError());
+      }
+   }
+
+   Alert("Done. Modified: ", modified, "  Failed: ", failed);
+}
+//+------------------------------------------------------------------+
