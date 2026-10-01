@@ -1,0 +1,92 @@
+//+------------------------------------------------------------------+
+//|                                           SetTP_ByRules.mq4      |
+//|  Sets TP: pending +10000 pts from order price                    |
+//|  open orders +6500 pts from open price                           |
+//|  if that level already passed -> +3200 pts from current price    |
+//+------------------------------------------------------------------+
+#property copyright "Custom"
+#property version   "1.01"
+#property strict
+#property script_show_inputs
+
+input int      PendingTPPoints   = 10000; // Pending orders: points from order price
+input int      OpenTPPoints      = 6500;  // Open orders: points from open price
+input int      FallbackTPPoints  = 3200;  // If 6500 level already passed: points from current price
+input bool     OnlyCurrentSymbol = true;  // true = only this chart symbol
+input int      MagicNumber       = -1;    // -1 = all magic numbers
+
+//+------------------------------------------------------------------+
+void OnStart()
+{
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+
+      if(OnlyCurrentSymbol && OrderSymbol() != Symbol())
+         continue;
+      if(MagicNumber >= 0 && OrderMagicNumber() != MagicNumber)
+         continue;
+
+      int    type   = OrderType();
+      string sym    = OrderSymbol();
+      double point  = MarketInfo(sym, MODE_POINT);
+      int    digits = (int)MarketInfo(sym, MODE_DIGITS);
+      double stopLv = MarketInfo(sym, MODE_STOPLEVEL) * point;
+      double ask    = MarketInfo(sym, MODE_ASK);
+      double bid    = MarketInfo(sym, MODE_BID);
+      double open   = OrderOpenPrice();
+      double sl     = OrderStopLoss();
+      double oldTP  = OrderTakeProfit();
+      double newTP  = 0;
+
+      bool isBuy     = (type == OP_BUY || type == OP_BUYLIMIT || type == OP_BUYSTOP);
+      bool isPending = (type == OP_BUYLIMIT || type == OP_BUYSTOP ||
+                        type == OP_SELLLIMIT || type == OP_SELLSTOP);
+
+      // 1. Pending: points from the pending order price
+      if(isPending)
+      {
+         double dist = PendingTPPoints * point;
+         newTP = isBuy ? open + dist : open - dist;
+      }
+      // 2 & 3. Open market orders
+      else if(type == OP_BUY || type == OP_SELL)
+      {
+         double dist    = OpenTPPoints * point;
+         double desired = (type == OP_BUY) ? open + dist : open - dist;
+
+         bool passed = false;
+         if(type == OP_BUY  && desired <= bid) passed = true;
+         if(type == OP_SELL && desired >= ask) passed = true;
+
+         if(!passed)
+            newTP = desired;
+         else
+         {
+            double fdist = FallbackTPPoints * point;
+            newTP = (type == OP_BUY) ? bid + fdist : ask - fdist;
+         }
+      }
+      else
+         continue;
+
+      newTP = NormalizeDouble(newTP, digits);
+
+      if(type == OP_BUY && newTP < bid + stopLv)
+         newTP = NormalizeDouble(bid + stopLv + point, digits);
+      if(type == OP_SELL && newTP > ask - stopLv)
+         newTP = NormalizeDouble(ask - stopLv - point, digits);
+
+      if(MathAbs(newTP - oldTP) < point)
+         continue;
+
+      ResetLastError();
+      if(OrderModify(OrderTicket(), open, sl, newTP, OrderExpiration(), clrNONE))
+         Print("Modified #", OrderTicket(), " ", sym,
+               " TP=", DoubleToString(newTP, digits));
+      else
+         Print("Modify failed #", OrderTicket(), " err=", GetLastError());
+   }
+}
+//+------------------------------------------------------------------+
