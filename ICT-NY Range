@@ -1,0 +1,293 @@
+//+------------------------------------------------------------------+
+//|  NY_Session_Levels.mq4                                           |
+//|  Script (not EA): draws NY-time based reference levels only.     |
+//|  Does NOT open, close or modify any order/position.              |
+//+------------------------------------------------------------------+
+#property copyright "NY Session Levels"
+#property version   "1.10"
+#property strict
+#property show_inputs
+
+//--- TIME CONVERSION ------------------------------------------------
+// Server time = New York time + NY_To_Server_Hours
+// Standard MT4 brokers (GMT+2 winter / GMT+3 summer, DST synced to US)
+// are always NY + 7 hours, all year round.
+input int    NY_To_Server_Hours = 7;
+
+//--- GENERAL --------------------------------------------------------
+input int    DaysToLookBack     = 7;        // NY calendar days back (0 = today only)
+
+//--- TIMES (NEW YORK TIME, HH:MM) -----------------------------------
+input string ON_Start           = "00:00";  // Overnight Trade Level start
+input string ON_End             = "05:00";  // Overnight Trade Level end
+input string PM_Start           = "07:00";  // PreMarket Level start
+input string PM_End             = "09:00";  // PreMarket Level end
+input string MidnightOpen_Time  = "00:00";  // Midnight open (open price)
+input string PrevClose_Time     = "16:14";  // Previous day regular close (close of the candle opening at this time)
+input string ExtOpen_Time       = "18:00";  // Extended Hour Open (open price)
+
+//--- APPEARANCE -----------------------------------------------------
+enum LABEL_SIDE { LABEL_LEFT = 0, LABEL_RIGHT = 1 };
+
+input color      ON_Color        = clrDodgerBlue;
+input color      PM_Color        = clrOrange;
+input color      Midnight_Color  = clrMagenta;
+input color      PrevClose_Color = clrRed;
+input color      ExtOpen_Color   = clrLime;
+input int        LineWidth       = 1;
+input ENUM_LINE_STYLE LineStyle  = STYLE_SOLID;
+input bool       ShowLabels      = true;
+input LABEL_SIDE LabelSide       = LABEL_RIGHT;  // label position: left or right
+input int        LabelBarsAhead  = 3;            // live lines: bars to the right of the last candle
+input bool       DeleteOldObjects = true;        // delete this script's previous objects first
+
+//--- internals ------------------------------------------------------
+#define PREFIX "NYLV_"
+#define TOL    600                          // max data gap tolerance (seconds)
+
+int m_ONs, m_ONe, m_PMs, m_PMe, m_Mid, m_Close, m_Ext;
+
+//+------------------------------------------------------------------+
+int ParseHM(string s)
+{
+   StringTrimLeft(s); StringTrimRight(s);
+   int p = StringFind(s, ":");
+   if(p < 1) return -1;
+   int h = (int)StringToInteger(StringSubstr(s, 0, p));
+   int m = (int)StringToInteger(StringSubstr(s, p + 1));
+   if(h < 0 || h > 24 || m < 0 || m > 59) return -1;
+   if(h == 24 && m != 0) return -1;
+   return h * 60 + m;
+}
+
+//+------------------------------------------------------------------+
+bool ParseAll()
+{
+   m_ONs = ParseHM(ON_Start);          m_ONe = ParseHM(ON_End);
+   m_PMs = ParseHM(PM_Start);          m_PMe = ParseHM(PM_End);
+   m_Mid = ParseHM(MidnightOpen_Time); m_Close = ParseHM(PrevClose_Time);
+   m_Ext = ParseHM(ExtOpen_Time);
+   if(m_ONs < 0 || m_ONe < 0 || m_PMs < 0 || m_PMe < 0 ||
+      m_Mid < 0 || m_Close < 0 || m_Ext < 0)
+   {
+      Alert("NY_Session_Levels: invalid time format. Use HH:MM (e.g. 07:00).");
+      return false;
+   }
+   if(m_ONe <= m_ONs || m_PMe <= m_PMs)
+   {
+      Alert("NY_Session_Levels: range end must be later than range start.");
+      return false;
+   }
+   return true;
+}
+
+//--- first M1 bar with open time >= t (index), -1 if none/gap too big
+int FirstBarAtOrAfter(datetime t)
+{
+   int s = iBarShift(Symbol(), PERIOD_M1, t, false);
+   if(s < 0) return -1;
+   if(iTime(Symbol(), PERIOD_M1, s) < t) s--;
+   if(s < 0) return -1;
+   if(iTime(Symbol(), PERIOD_M1, s) - t > TOL) return -1;
+   return s;
+}
+
+//--- last M1 bar with open time <= t (index), -1 if none/gap too big
+int LastBarAtOrBefore(datetime t)
+{
+   int s = iBarShift(Symbol(), PERIOD_M1, t, false);
+   if(s < 0) return -1;
+   datetime bt = iTime(Symbol(), PERIOD_M1, s);
+   if(bt > t) return -1;
+   if(t - bt > TOL) return -1;
+   return s;
+}
+
+//--- high/low of completed range [a, b) in server time
+bool GetRange(datetime a, datetime b, double &hi, double &lo)
+{
+   if(b > TimeCurrent()) return false;               // range not finished yet
+   int s = FirstBarAtOrAfter(a);                     // oldest bar in range
+   int e = LastBarAtOrBefore(b - 1);                 // newest bar in range
+   if(s < 0 || e < 0 || e > s) return false;
+   if(iTime(Symbol(), PERIOD_M1, e) < a) return false;
+   hi = -DBL_MAX; lo = DBL_MAX;
+   for(int i = e; i <= s; i++)
+   {
+      double h = iHigh(Symbol(), PERIOD_M1, i);
+      double l = iLow(Symbol(),  PERIOD_M1, i);
+      if(h > hi) hi = h;
+      if(l < lo) lo = l;
+   }
+   return (hi >= lo);
+}
+
+//+------------------------------------------------------------------+
+void DrawLevel(string key, datetime dayNY, datetime t1, datetime t2,
+               double price, color clr, string label)
+{
+   string name = PREFIX + key + "_" + TimeToString(dayNY, TIME_DATE);
+
+   if(ObjectFind(0, name) >= 0) ObjectDelete(0, name);
+   if(!ObjectCreate(0, name, OBJ_TREND, 0, t1, price, t2, price))
+   {
+      Print("Cannot create ", name, " err=", GetLastError());
+      return;
+   }
+   ObjectSetInteger(0, name, OBJPROP_COLOR,      clr);
+   ObjectSetInteger(0, name, OBJPROP_STYLE,      LineStyle);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH,      LineWidth);
+   ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT,  false);
+   ObjectSetInteger(0, name, OBJPROP_BACK,       false);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, true);
+   ObjectSetString (0, name, OBJPROP_TOOLTIP,
+                    label + " " + DoubleToString(price, Digits));
+
+   if(ShowLabels)
+   {
+      string tn = name + "_txt";
+      if(ObjectFind(0, tn) >= 0) ObjectDelete(0, tn);
+
+      datetime          lt;
+      ENUM_ANCHOR_POINT anc;
+
+      if(LabelSide == LABEL_LEFT)
+      {
+         lt  = t1;
+         anc = ANCHOR_LEFT_LOWER;
+      }
+      else
+      {
+         datetime now = TimeCurrent();
+         if(t2 > now)   // line still running into the future: put label right of last candle
+         {
+            lt  = now + (datetime)(LabelBarsAhead * PeriodSeconds());
+            anc = ANCHOR_LEFT_LOWER;
+         }
+         else           // finished line: label at the right end, text ends there
+         {
+            lt  = t2;
+            anc = ANCHOR_RIGHT_LOWER;
+         }
+      }
+
+      if(ObjectCreate(0, tn, OBJ_TEXT, 0, lt, price))
+      {
+         ObjectSetString (0, tn, OBJPROP_TEXT, label + " " + DoubleToString(price, Digits));
+         ObjectSetString (0, tn, OBJPROP_FONT, "Arial");
+         ObjectSetInteger(0, tn, OBJPROP_FONTSIZE, 8);
+         ObjectSetInteger(0, tn, OBJPROP_COLOR, clr);
+         ObjectSetInteger(0, tn, OBJPROP_ANCHOR, anc);
+         ObjectSetInteger(0, tn, OBJPROP_SELECTABLE, false);
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+void OnStart()
+{
+   if(!ParseAll()) return;
+
+   if(NY_To_Server_Hours < -14 || NY_To_Server_Hours > 14)
+   {
+      Alert("NY_Session_Levels: NY_To_Server_Hours out of range.");
+      return;
+   }
+   if(iBars(Symbol(), PERIOD_M1) < 100)
+   {
+      Alert("NY_Session_Levels: not enough M1 history. Open an M1 chart of ",
+            Symbol(), ", scroll back to load data, then run again.");
+      return;
+   }
+
+   if(DeleteOldObjects) ObjectsDeleteAll(0, PREFIX);
+
+   long off    = (long)NY_To_Server_Hours * 3600;
+   long nowSrv = (long)TimeCurrent();
+   long nowNY  = nowSrv - off;
+   long day0   = nowNY - (nowNY % 86400);            // today 00:00 New York
+
+   int drawn = 0;
+
+   for(int k = 0; k <= DaysToLookBack; k++)
+   {
+      long dayNYl     = day0 - (long)k * 86400;
+      datetime dayNY  = (datetime)dayNYl;
+      long dayStartSv = dayNYl + off;                // that NY day 00:00 in server time
+      datetime dayEnd = (datetime)(dayStartSv + 86400);
+
+      // end of next trading weekday (for levels that matter the next day)
+      int dow = TimeDayOfWeek(dayNY);
+      int add = 1;
+      if(dow == 5) add = 3;                          // Friday -> Monday
+      else if(dow == 6) add = 2;                     // Saturday -> Monday
+      datetime nextEnd = (datetime)(dayStartSv + (long)(add + 1) * 86400);
+
+      double hi, lo;
+
+      //--- Overnight Trade Level (high/low)
+      datetime a = (datetime)(dayStartSv + (long)m_ONs * 60);
+      datetime b = (datetime)(dayStartSv + (long)m_ONe * 60);
+      if(GetRange(a, b, hi, lo))
+      {
+         DrawLevel("ON_HIGH", dayNY, a, dayEnd, hi, ON_Color, "Overnight Trade High");
+         DrawLevel("ON_LOW",  dayNY, a, dayEnd, lo, ON_Color, "Overnight Trade Low");
+         drawn += 2;
+      }
+
+      //--- PreMarket Level (high/low)
+      a = (datetime)(dayStartSv + (long)m_PMs * 60);
+      b = (datetime)(dayStartSv + (long)m_PMe * 60);
+      if(GetRange(a, b, hi, lo))
+      {
+         DrawLevel("PM_HIGH", dayNY, a, dayEnd, hi, PM_Color, "PreMarket High");
+         DrawLevel("PM_LOW",  dayNY, a, dayEnd, lo, PM_Color, "PreMarket Low");
+         drawn += 2;
+      }
+
+      //--- Midnight Open (open price of first bar at/after 00:00 NY)
+      datetime t = (datetime)(dayStartSv + (long)m_Mid * 60);
+      if((long)t <= nowSrv)
+      {
+         int i = FirstBarAtOrAfter(t);
+         if(i >= 0)
+         {
+            DrawLevel("MID_OPEN", dayNY, t, dayEnd,
+                      iOpen(Symbol(), PERIOD_M1, i), Midnight_Color, "Midnight Open");
+            drawn++;
+         }
+      }
+
+      //--- Previous day regular trading close (close of candle opening 16:14 NY)
+      t = (datetime)(dayStartSv + (long)m_Close * 60);
+      if((long)t + 60 <= nowSrv)
+      {
+         int i = LastBarAtOrBefore(t);
+         if(i >= 0)
+         {
+            DrawLevel("PREV_CLOSE", dayNY, t, nextEnd,
+                      iClose(Symbol(), PERIOD_M1, i), PrevClose_Color,
+                      "Prev Day Regular Close");
+            drawn++;
+         }
+      }
+
+      //--- Extended Hour Open (open price of first bar at/after 18:00 NY)
+      t = (datetime)(dayStartSv + (long)m_Ext * 60);
+      if((long)t <= nowSrv)
+      {
+         int i = FirstBarAtOrAfter(t);
+         if(i >= 0)
+         {
+            DrawLevel("EXT_OPEN", dayNY, t, nextEnd,
+                      iOpen(Symbol(), PERIOD_M1, i), ExtOpen_Color, "Extended Hour Open");
+            drawn++;
+         }
+      }
+   }
+
+   ChartRedraw(0);
+   Print("NY_Session_Levels: ", drawn, " levels drawn on ", Symbol(),
+         " (server = NY + ", NY_To_Server_Hours, "h).");
+}
+//+------------------------------------------------------------------+
